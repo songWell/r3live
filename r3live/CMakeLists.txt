@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
+add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\" -ggdb)
 
 # Add OpenCV if available
 # set(OpenCV_DIR "/home/zivlin/opt/opencv/build")
@@ -17,7 +17,7 @@ if(Boost_FOUND)
 	INCLUDE_DIRECTORIES(${Boost_INCLUDE_DIRS})
 	LINK_DIRECTORIES(${Boost_LIBRARY_DIRS})
 endif()
-
+set(cv_bridge_DIR /home/sfj/catkin_ws/install/share/cv_bridge/cmake)
 find_package(catkin REQUIRED COMPONENTS
                     roscpp
                     std_msgs
@@ -30,7 +30,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 # find_package(Ceres REQUIRED)
 find_package(PCL REQUIRED)
-find_package(OpenCV REQUIRED)
+find_package(OpenCV 4.5.5 REQUIRED)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}   ${OpenMP_C_FLAGS}")

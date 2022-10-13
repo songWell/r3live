@@ -124,7 +124,7 @@ void R3LIVE::print_dash_board()
     }
     std::string out_str_line_1, out_str_line_2;
     out_str_line_1 = std::string(        "| System-time | LiDAR-frame | Camera-frame |  Pts in maps | Memory used (Mb) |") ;
-    //                                    1             16            30             45             60     
+    //                                    1             16            30             45             60
     // clang-format on
     out_str_line_2.reserve( 1e3 );
     out_str_line_2.append( "|   " ).append( Common_tools::get_current_time_str() );
@@ -317,7 +317,13 @@ void R3LIVE::service_process_img_buffer()
             g_received_img_msg.pop_front();
             mutex_image_callback.unlock();
         }
-        process_image( image_get, img_rec_time );
+        if(m_image_resize) {
+            cv::Mat image_get_resize;
+            cv::resize(image_get, image_get_resize, cv::Size(m_vio_image_width, m_vio_image_heigh));
+            process_image( image_get_resize, img_rec_time );
+        } else {
+            process_image(image_get, img_rec_time);
+        }
     }
 }
 
@@ -413,8 +419,10 @@ void   R3LIVE::process_image( cv::Mat &temp_img, double msg_time )
         img_pose->m_raw_img = img_get;
     }
     cv::remap( img_get, img_pose->m_img, m_ud_map1, m_ud_map2, cv::INTER_LINEAR );
-    // cv::imshow("sub Img", img_pose->m_img);
+//    std::cout<<"size "<<img_get.size()<<std::endl;
+//     cv::imshow("sub Img", img_pose->m_img);
     img_pose->m_timestamp = msg_time;
+
     img_pose->init_cubic_interpolation();
     img_pose->image_equalize();
     m_camera_data_mutex.lock();
@@ -440,6 +448,7 @@ void R3LIVE::load_vio_parameters()
     m_ros_node_handle.getParam( "r3live_vio/camera_dist_coeffs", camera_dist_coeffs_data );
     m_ros_node_handle.getParam( "r3live_vio/camera_ext_R", camera_ext_R_data );
     m_ros_node_handle.getParam( "r3live_vio/camera_ext_t", camera_ext_t_data );
+    get_ros_parameter( m_ros_node_handle,  "r3live_vio/resize", m_image_resize, false);
 
     CV_Assert( ( m_vio_image_width != 0 && m_vio_image_heigh != 0 ) );
 
@@ -465,6 +474,7 @@ void R3LIVE::load_vio_parameters()
     cout << "[Ros_parameter]: r3live_vio/Camera extrinsic R: " << endl;
     cout << m_camera_ext_R << endl;
     cout << "[Ros_parameter]: r3live_vio/Camera extrinsic T: " << m_camera_ext_t.transpose() << endl;
+    cout << "[Ros_parameter]: r3live_vio/image_size: "<< m_image_resize<<endl;
     std::this_thread::sleep_for( std::chrono::seconds( 1 ) );
 }
 

@@ -159,6 +159,9 @@ public:
     bool flg_exit = false;
     bool flg_reset = false;
 
+    //sfj custom setting
+    bool m_transform_imu = false;
+
     // Buffers for measurements
     double cube_len = 0.0;
     double lidar_end_time = 0.0;
@@ -251,6 +254,7 @@ public:
     double m_minumum_rgb_pts_size = 0.05;
     double m_vio_image_width = 0;
     double m_vio_image_heigh = 0;
+    bool m_image_resize = false;
     int m_if_estimate_i2c_extrinsic = 1;
     int m_if_estimate_intrinsic = 1;
     double m_control_image_freq =  100; 
@@ -339,7 +343,7 @@ public:
             cout << "LiDAR pointcloud topic: " << LiDAR_pointcloud_topic << endl;
             cout << "IMU topic: " << IMU_topic << endl;
             cout << "Image topic: " << IMAGE_topic << endl;
-            cout << "Image compressed topic: " << IMAGE_topic << endl;
+            cout << "Image compressed topic: " << IMAGE_topic_compressed << endl;
              cout << "=======        -End-                =======" << endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
@@ -372,6 +376,8 @@ public:
             get_ros_parameter( m_ros_node_handle, "r3live_common/estimate_i2c_extrinsic", m_if_estimate_i2c_extrinsic, 0 );
             get_ros_parameter( m_ros_node_handle, "r3live_common/estimate_intrinsic", m_if_estimate_intrinsic, 0 );
             get_ros_parameter( m_ros_node_handle, "r3live_common/maximum_vio_tracked_pts", m_maximum_vio_tracked_pts, 600 );
+
+            get_ros_parameter( m_ros_node_handle, "r3live_common/transform_imu", m_transform_imu, false);
         }
         if ( 1 )
         {
@@ -447,4 +453,6 @@ public:
     int service_LIO_update();
     void publish_render_pts( ros::Publisher &pts_pub, Global_map &m_map_rgb_pts );
     void print_dash_board();
+    void transformImu(sensor_msgs::Imu::Ptr imu_ptr);
+    void genFakeImu(sensor_msgs::Imu::Ptr imu_ptr);
 };

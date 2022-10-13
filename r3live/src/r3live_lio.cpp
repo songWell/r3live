@@ -69,12 +69,31 @@ void R3LIVE::imu_cbk( const sensor_msgs::Imu::ConstPtr &msg_in )
         msg->linear_acceleration.y *= G_m_s2;
         msg->linear_acceleration.z *= G_m_s2;
     }
+//    genFakeImu(msg);
+    if(m_transform_imu){
+        transformImu(msg);
+    }
+
 
     imu_buffer_lio.push_back( msg );
     imu_buffer_vio.push_back( msg );
-    // std::cout<<"got imu: "<<timestamp<<" imu size "<<imu_buffer_lio.size()<<std::endl;
+//     std::cout<<"got imu: "<<timestamp<<" imu size "<<imu_buffer_lio.size()<<std::endl;
     mtx_buffer.unlock();
     sig_buffer.notify_all();
+}
+
+void R3LIVE::genFakeImu(sensor_msgs::Imu::Ptr imu_ptr) {
+    auto &imu_acc = imu_ptr->linear_acceleration;
+    auto &gyr_acc = imu_ptr->angular_velocity;
+    // new_data = | -1, 0, 0 |
+    //            | 0, 1, 0|
+    //            | 0,0,-1|  * raw_data;
+    imu_acc.z = 9.8;
+    imu_acc.y = 0.001;
+    imu_acc.x = 0.001;
+    gyr_acc.x = 0.001;
+    gyr_acc.y = 0.001;
+    gyr_acc.z = 0.001;
 }
 
 void printf_field_name( sensor_msgs::PointCloud2::ConstPtr &msg )
@@ -165,9 +184,15 @@ bool R3LIVE::sync_packages( MeasureGroup &meas )
         }
         // pcl::fromROSMsg(*(lidar_buffer.front()), *(meas.lidar));
         meas.lidar_beg_time = lidar_buffer.front()->header.stamp.toSec();
-        lidar_end_time = meas.lidar_beg_time + meas.lidar->points.back().curvature / double( 1000 );
+        double max_offset_time = 0;
+        for(auto& temp_point : meas.lidar->points){
+            if(temp_point.curvature>max_offset_time)
+                max_offset_time = temp_point.curvature;
+        }
+//        lidar_end_time = meas.lidar_beg_time + meas.lidar->points.back().curvature / double( 1000 );
+        lidar_end_time = meas.lidar_beg_time + max_offset_time/double(1000);
         meas.lidar_end_time = lidar_end_time;
-        // printf("Input LiDAR time = %.3f, %.3f\n", meas.lidar_beg_time, meas.lidar_end_time);
+//         printf("Input LiDAR time = %.3f, %.3f\n", meas.lidar_beg_time, meas.lidar_end_time);
         // printf_line_mem_MB;
         lidar_pushed = true;
     }
@@ -188,6 +213,7 @@ bool R3LIVE::sync_packages( MeasureGroup &meas )
         meas.imu.push_back( imu_buffer_lio.front() );
         imu_buffer_lio.pop_front();
     }
+    std::cout<<"imu message num: "<<meas.imu.size()<<std::endl;
 
     lidar_buffer.pop_front();
     lidar_pushed = false;
@@ -490,6 +516,21 @@ void R3LIVE::wait_render_thread_finish()
     }
 }
 
+void R3LIVE::transformImu(sensor_msgs::Imu::Ptr imu_ptr){
+        // only for rslidar sense
+        auto &imu_acc = imu_ptr->linear_acceleration;
+        auto &gyr_acc = imu_ptr->angular_velocity;
+        // new_data = | -1, 0, 0 |
+        //            | 0, 1, 0|
+        //            | 0,0,-1|  * raw_data;
+        imu_acc.z = -1*imu_acc.z;
+        imu_acc.y = imu_acc.y;
+        imu_acc.x = -1*imu_acc.x;
+        gyr_acc.x = -1*gyr_acc.x;
+        gyr_acc.y = gyr_acc.y;
+        gyr_acc.z = -1*gyr_acc.z;
+}
+
 int R3LIVE::service_LIO_update()
 {
     nav_msgs::Path path;
@@ -566,7 +607,13 @@ int R3LIVE::service_LIO_update()
             pca_time = 0;
             svd_time = 0;
             t0 = omp_get_wtime();
+//            std::cout << "before imu: " << g_lio_state.pos_end.transpose() << ", "
+//                      << g_lio_state.vel_end.transpose() << ", " << g_lio_state.bias_g.transpose() << ", " << g_lio_state.bias_a.transpose()
+//                      << std::endl;
             p_imu->Process( Measures, g_lio_state, feats_undistort );
+//            std::cout << "after imu: " << g_lio_state.pos_end.transpose() << ", "
+//                      << g_lio_state.vel_end.transpose() << ", " << g_lio_state.bias_g.transpose() << ", " << g_lio_state.bias_a.transpose()
+//                      << std::endl;
 
             g_camera_lidar_queue.g_noise_cov_acc = p_imu->cov_acc;
             g_camera_lidar_queue.g_noise_cov_gyro = p_imu->cov_gyr;
@@ -594,8 +641,8 @@ int R3LIVE::service_LIO_update()
 #ifdef DEBUG_PRINT
             std::cout << "current lidar time " << Measures.lidar_beg_time << " "
                       << "first lidar time " << frame_first_pt_time << std::endl;
-            std::cout << "pre-integrated states: " << euler_cur.transpose() * 57.3 << " " << g_lio_state.pos_end.transpose() << " "
-                      << g_lio_state.vel_end.transpose() << " " << g_lio_state.bias_g.transpose() << " " << g_lio_state.bias_a.transpose()
+            std::cout << "pre-integrated states: " << euler_cur.transpose() * 57.3 << ", " << g_lio_state.pos_end.transpose() << ", "
+                      << g_lio_state.vel_end.transpose() << ", " << g_lio_state.bias_g.transpose() << ", " << g_lio_state.bias_a.transpose()
                       << std::endl;
 #endif
             lasermap_fov_segment();
@@ -935,7 +982,6 @@ int R3LIVE::service_LIO_update()
                     pointBodyToWorld( &( feats_down->points[ i ] ), &( feats_down_updated->points[ i ] ) );
                 }
                 t4 = omp_get_wtime();
-               
                 ikdtree.Add_Points( feats_down_updated->points, true );
                 
                 kdtree_incremental_time = omp_get_wtime() - t4 + readd_time + readd_box_time + delete_box_time;
@@ -1008,6 +1054,9 @@ int R3LIVE::service_LIO_update()
                 pubLaserCloudEffect.publish( laserCloudFullRes3 );
             }
 
+//            std::cout << "update states: " << "pose_end: " << g_lio_state.pos_end.transpose() << " vel_end "
+//                      << g_lio_state.vel_end.transpose() << " bias_g " << g_lio_state.bias_g.transpose() << " bias_a " << g_lio_state.bias_a.transpose()
+//                      << std::endl;
             /******* Publish Maps:  *******/
             sensor_msgs::PointCloud2 laserCloudMap;
             pcl::toROSMsg( *featsFromMap, laserCloudMap );

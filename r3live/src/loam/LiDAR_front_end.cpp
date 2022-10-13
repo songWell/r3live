@@ -1,5 +1,7 @@
 #include <ros/ros.h>
+#include <math.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl/common/transforms.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <livox_ros_driver/CustomMsg.h>
 #include "../tools/tools_logger.hpp"
@@ -17,7 +19,9 @@ enum LID_TYPE
     MID,
     HORIZON,
     VELO16,
-    OUST64
+    OUST64,
+    RSLIDAR32,
+    RSLIDAR32COMP
 };
 
 enum Feature
@@ -75,6 +79,7 @@ double jump_up_limit, jump_down_limit;
 double cos160;
 double edgea, edgeb;
 double smallp_intersect, smallp_ratio;
+double min_intensity, min_dist;
 int    point_filter_num;
 int    g_if_using_raw_point = 1;
 int    g_LiDAR_sampling_point_step = 3;
@@ -82,12 +87,17 @@ void   mid_handler( const sensor_msgs::PointCloud2::ConstPtr &msg );
 void   horizon_handler( const livox_ros_driver::CustomMsg::ConstPtr &msg );
 void   velo16_handler( const sensor_msgs::PointCloud2::ConstPtr &msg );
 void   oust64_handler( const sensor_msgs::PointCloud2::ConstPtr &msg );
+void   rslidar32_handler( const sensor_msgs::PointCloud2::ConstPtr &msg );
+void   rslidar32comp_handler( const sensor_msgs::PointCloud2::ConstPtr &msg );
 void   give_feature( pcl::PointCloud< PointType > &pl, vector< orgtype > &types, pcl::PointCloud< PointType > &pl_corn,
                      pcl::PointCloud< PointType > &pl_surf );
 void   pub_func( pcl::PointCloud< PointType > &pl, ros::Publisher pub, const ros::Time &ct );
 int    plane_judge( const pcl::PointCloud< PointType > &pl, vector< orgtype > &types, uint i, uint &i_nex, Eigen::Vector3d &curr_direct );
 bool   small_plane( const pcl::PointCloud< PointType > &pl, vector< orgtype > &types, uint i_cur, uint &i_nex, Eigen::Vector3d &curr_direct );
 bool   edge_jump_judge( const pcl::PointCloud< PointType > &pl, vector< orgtype > &types, uint i, Surround nor_dir );
+
+vector<double> lidar_imu_rotm;
+Eigen::Matrix4f lidar_rot;
 
 int main( int argc, char **argv )
 {
@@ -115,6 +125,18 @@ int main( int argc, char **argv )
     n.param< int >( "Lidar_front_end/point_filter_num", point_filter_num, 1 );
     n.param< int >( "Lidar_front_end/point_step", g_LiDAR_sampling_point_step, 3 );
     n.param< int >( "Lidar_front_end/using_raw_point", g_if_using_raw_point, 1 );
+    n.param< double >("Lidar_front_end/min_dist", min_dist, 0.1);
+    n.param< double >("Lidar_front_end/min_intensity", min_intensity, 0);
+    if(n.getParam("Lidar_front_end/lidar_imu_rotm", lidar_imu_rotm)){
+        lidar_rot << lidar_imu_rotm[0], lidar_imu_rotm[1], lidar_imu_rotm[2], 0.0,
+                     lidar_imu_rotm[3], lidar_imu_rotm[4], lidar_imu_rotm[5], 0.0,
+                     lidar_imu_rotm[6], lidar_imu_rotm[7], lidar_imu_rotm[8], 0.0,
+                     0.0, 0.0, 0.0, 1.0;
+    }else{
+        std::cout<<"No Lidar->IMU extrinsics defined, assuming identity"<<std::endl;
+        lidar_rot = Eigen::Matrix4f::Identity();
+    }
+    std::cout<<"lidar wrt imu extrinsics "<<lidar_rot<<std::endl;
 
     jump_up_limit = cos( jump_up_limit / 180 * M_PI );
     jump_down_limit = cos( jump_down_limit / 180 * M_PI );
@@ -144,7 +166,14 @@ int main( int argc, char **argv )
         printf( "OUST64\n" );
         sub_points = n.subscribe( "/os_cloud_node/points", 1000, oust64_handler, ros::TransportHints().tcpNoDelay() );
         break;
-
+    case RSLIDAR32:
+        printf("Rslidar32\n");
+        sub_points = n.subscribe( "/rslidar_points", 1000, rslidar32_handler, ros::TransportHints().tcpNoDelay() );
+        break;
+    case RSLIDAR32COMP:
+        printf("RSLIDAR32COMP\n");
+        sub_points = n.subscribe( "/rslidar_points", 1000, rslidar32comp_handler, ros::TransportHints().tcpNoDelay() );
+        break;
     default:
         printf( "Lidar type is wrong.\n" );
         exit( 0 );
@@ -325,6 +354,30 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(ouster_ros::Point,
 )
 // clang-format on
 
+namespace rslidar_ros {
+
+    struct EIGEN_ALIGN16 Point {
+            PCL_ADD_POINT4D;
+            uint8_t intensity;
+            uint16_t ring;
+            double timestamp;
+            EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    };
+}  // namespace ouster_ros
+
+// clang-format off
+POINT_CLOUD_REGISTER_POINT_STRUCT(rslidar_ros::Point,
+(float, x, x)
+(float, y, y)
+(float, z, z)
+(uint8_t, intensity, intensity)
+// use std::uint32_t to avoid conflicting with pcl::uint32_t
+(std::uint16_t, ring, ring)
+(double, timestamp, timestamp)
+)
+// clang-format on
+
+
 void oust64_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
 {
     pcl::PointCloud< PointType > pl_processed;
@@ -336,6 +389,11 @@ void oust64_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
     double time_stamp = msg->header.stamp.toSec();
     pl_processed.clear();
     pl_processed.reserve( pl_orig.points.size() );
+//        std::cout<<"time stamp "<<time_stamp<<std::endl;
+//    std::cout<<"start time "<<pl_orig.points[0].t<<std::endl;
+//    std::cout<<"end time "<<pl_orig.points[plsize-1].t<<std::endl;
+//    std::cout<<"offset time "<<pl_orig.points[0].timestamp - time_stamp<<std::endl;
+//    std::cout<<"offset time "<<pl_orig.points[plsize-1].timestamp - start_time_stamp<<std::endl;
     for ( int i = 0; i < pl_orig.points.size(); i++ )
     {
         double range = std::sqrt( pl_orig.points[ i ].x * pl_orig.points[ i ].x + pl_orig.points[ i ].y * pl_orig.points[ i ].y +
@@ -358,8 +416,9 @@ void oust64_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
             yaw_angle -= 360.0;
         if ( yaw_angle <= -180.0 )
             yaw_angle += 360.0;
-
+//        std::cout<<"offset time: "<<pl_orig.points[ i ].t<<std::endl;
         added_pt.curvature = ( pl_orig.points[ i ].t / 1e9 ) * 1000.0;
+//        std::cout<<"processed time: "<<added_pt.curvature<<std::endl;
 
         pl_processed.points.push_back( added_pt );
         if ( 0 ) // For debug
@@ -380,6 +439,104 @@ void oust64_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
     pub_func( pl_processed, pub_corn, msg->header.stamp );
 }
 
+//int msg_num_sfj = 0;
+void  rslidar32_handler( const sensor_msgs::PointCloud2::ConstPtr &msg ){
+//    msg_num_sfj++;
+//    std::cout<<"msg_num: "<<msg_num_sfj<<std::endl;
+    pcl::PointCloud< PointType > pl_processed;
+    pcl::PointCloud< rslidar_ros::Point > pl_orig;
+    // pcl::PointCloud<pcl::PointXYZI> pl_orig;
+    pcl::fromROSMsg( *msg, pl_orig );
+    uint plsize = pl_orig.size();
+
+    double time_stamp = msg->header.stamp.toSec();  // last point time
+//    double start_time_stamp = pl_orig.points[0].timestamp;
+    double start_time_stamp = time_stamp - 0.1;
+    pl_processed.clear();
+    pl_processed.reserve( pl_orig.points.size() );
+//    std::cout<<std::fixed;
+//    std::cout<<"time stamp "<<time_stamp<<std::endl;
+//    std::cout<<"start time "<<pl_orig.points[0].timestamp<<std::endl;
+//    std::cout<<"end time "<<pl_orig.points[plsize-1].timestamp<<std::endl;
+//    std::cout<<"x : "<<pl_orig.points[0].x <<" y "<<pl_orig.points[0].y <<" z "<<pl_orig.points[0].z<<std::endl;
+//    std::cout<<"offset time "<<pl_orig.points[0].timestamp - time_stamp<<std::endl;
+//    std::cout<<"offset time "<<pl_orig.points[plsize-1].timestamp - start_time_stamp<<std::endl;
+    for ( int i = 0; i < pl_orig.points.size(); i++ )
+    {
+//        {
+//            std::cout<<"timestamp time: "<<pl_orig.points[ i ].timestamp<<std::endl;
+//            printf( "[%d] (%.2f, %.2f, %.2f) \r\n", i, pl_orig.points[ i ].x, pl_orig.points[ i ].y,
+//                    pl_orig.points[ i ].z);
+//            // printf("(%d, %.2f, %.2f)\r\n", pl_orig.points[i].ring, pl_orig.points[i].t, pl_orig.points[i].range);
+//            // printf("(%d, %d, %d)\r\n", pl_orig.points[i].ring, 1, 2);
+//            cout << ( int ) ( pl_orig.points[ i ].ring )  << endl;
+//        }
+        auto temp_x = pl_orig.points[ i ].x;
+        auto temp_y = pl_orig.points[ i ].y;
+        auto temp_z = pl_orig.points[ i ].z;
+        if(isnan(pl_orig.points[ i ].x) || isnan(pl_orig.points[ i ].y) || isnan(pl_orig.points[ i ].z)){
+            continue;
+        }
+        if(temp_x > 250 || temp_x < -250 || temp_y>250 || temp_y<-250 || temp_z > 250 || temp_z < -250){
+            continue;
+        }
+        double range = std::sqrt( pl_orig.points[ i ].x * pl_orig.points[ i ].x + pl_orig.points[ i ].y * pl_orig.points[ i ].y +
+                                  pl_orig.points[ i ].z * pl_orig.points[ i ].z );
+        if ( range < blind )
+        {
+            continue;
+        }
+        Eigen::Vector3d pt_vec;
+        PointType       added_pt;
+        added_pt.x = pl_orig.points[ i ].x;
+        added_pt.y = pl_orig.points[ i ].y;
+        added_pt.z = pl_orig.points[ i ].z;
+        added_pt.intensity = pl_orig.points[ i ].intensity;
+        added_pt.normal_x = 0;
+        added_pt.normal_y = 0;
+        added_pt.normal_z = 0;
+        double yaw_angle = std::atan2( added_pt.y, added_pt.x ) * 57.3;
+        if ( yaw_angle >= 180.0 )
+            yaw_angle -= 360.0;
+        if ( yaw_angle <= -180.0 )
+            yaw_angle += 360.0;
+
+        added_pt.curvature = (pl_orig.points[ i ].timestamp - start_time_stamp)*1000;  //why? curvature unit : ms
+
+        pl_processed.points.push_back( added_pt );
+        if ( 0 ) // For debug
+        {
+//            if ( pl_processed.size() % 100 == 0 )
+            {
+                std::cout<<"timestamp time: "<<pl_orig.points[ i ].timestamp<<std::endl;
+                std::cout<<"processed time: "<<added_pt.curvature<<std::endl;
+                printf( "[%d] (%.2f, %.2f, %.2f), ( %.2f, %.2f, %.2f ) | %.2f | %.3f,  \r\n", i, pl_orig.points[ i ].x, pl_orig.points[ i ].y,
+                        pl_orig.points[ i ].z, pl_processed.points.back().normal_x, pl_processed.points.back().normal_y,
+                        pl_processed.points.back().normal_z, yaw_angle, pl_processed.points.back().intensity );
+                // printf("(%d, %.2f, %.2f)\r\n", pl_orig.points[i].ring, pl_orig.points[i].t, pl_orig.points[i].range);
+                // printf("(%d, %d, %d)\r\n", pl_orig.points[i].ring, 1, 2);
+                cout << ( int ) ( pl_orig.points[ i ].ring ) << ", " << pl_processed.points.back().curvature << endl;
+            }
+        }
+    }
+    if(pl_processed.size()<100){
+        std::cout<<"pl_processed size: "<<pl_processed.size()<<std::endl;
+        return;
+    }
+    auto start_stamp = ros::Time().fromSec(start_time_stamp);
+    pub_func( pl_processed, pub_full, start_stamp );
+    pub_func( pl_processed, pub_surf, start_stamp );
+    pub_func( pl_processed, pub_corn, start_stamp );
+}
+
+void  rslidar32comp_handler( const sensor_msgs::PointCloud2::ConstPtr &msg ){
+    pcl::PointCloud< PointType > pl_processed;
+    pcl::fromROSMsg( *msg, pl_processed );
+
+    pub_func( pl_processed, pub_full, msg->header.stamp );
+    pub_func( pl_processed, pub_surf, msg->header.stamp );
+    pub_func( pl_processed, pub_corn, msg->header.stamp );
+}
 
 void give_feature( pcl::PointCloud< PointType > &pl, vector< orgtype > &types, pcl::PointCloud< PointType > &pl_corn,
                    pcl::PointCloud< PointType > &pl_surf )

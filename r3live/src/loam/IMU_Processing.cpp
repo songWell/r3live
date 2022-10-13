@@ -96,6 +96,7 @@ void ImuProcess::IMU_Initial( const MeasureGroup &meas, StatesGroup &state_inout
     state_inout.gravity = Eigen::Vector3d( 0, 0, 9.805 );
     state_inout.rot_end = Eye3d;
     state_inout.bias_g = mean_gyr;
+//    state_inout.bias_a = mean_acc;
 }
 
 void ImuProcess::lic_state_propagate( const MeasureGroup &meas, StatesGroup &state_inout )
@@ -112,8 +113,15 @@ void ImuProcess::lic_state_propagate( const MeasureGroup &meas, StatesGroup &sta
     std::sort( pcl_out.points.begin(), pcl_out.points.end(), time_list );
     const double &pcl_end_time = pcl_beg_time + pcl_out.points.back().curvature / double( 1000 );
     double        end_pose_dt = pcl_end_time - imu_end_time;
-
+//    std::cout<<std::fixed;
+//    std::cout<<"pcl beg time: "<<pcl_beg_time<<" pcl end time: "<<pcl_end_time<<" imu end time"<<imu_end_time<<" end_pose_dt: "<< end_pose_dt<<std::endl;
+//    std::cout << "before imu preintegration: " << state_inout.pos_end.transpose() << ", "
+//              << state_inout.vel_end.transpose() << ", " << state_inout.bias_g.transpose() << ", " << state_inout.bias_a.transpose()
+//              << std::endl;
     state_inout = imu_preintegration( state_inout, v_imu, end_pose_dt );
+//    std::cout << "after imu preintegration: " << state_inout.pos_end.transpose() << ", "
+//              << state_inout.vel_end.transpose() << ", " << state_inout.bias_g.transpose() << ", " << state_inout.bias_a.transpose()
+//              << std::endl;
     last_imu_ = meas.imu.back();
 }
 
@@ -255,13 +263,16 @@ StatesGroup ImuProcess::imu_preintegration( const StatesGroup &state_in, std::de
         angvel_last = angvel_avr;
         acc_s_last = acc_imu;
 
-        // cout <<  std::setprecision(3) << " dt = " << dt << ", acc: " << acc_avr.transpose()
-        //      << " acc_imu: " << acc_imu.transpose()
-        //      << " vel_imu: " << vel_imu.transpose()
-        //      << " omega: " << angvel_avr.transpose()
-        //      << " pos_imu: " << pos_imu.transpose()
-        //       << endl;
-        // cout << "Acc_avr: " << acc_avr.transpose() << endl;
+//         cout <<  std::setprecision(3) << " dt = " << dt << ", acc: " << acc_avr.transpose()
+//              << " acc_imu: " << acc_imu.transpose()
+//              << " vel_imu: " << vel_imu.transpose()
+//              << " omega: " << angvel_avr.transpose()
+//              << " pos_imu: " << pos_imu.transpose()
+//               << endl;
+//         cout << "Acc_avr: " << acc_avr.transpose() << endl;
+//         cout << "imu angular_velocity "<<head->angular_velocity.x <<" "<<head->angular_velocity.y<<" "<<head->angular_velocity.z<<std::endl;
+//         cout << "imu linear_acceleration "<<head->linear_acceleration.x<<" "<<head->linear_acceleration.y<<" "<<head->linear_acceleration.z<<std::endl;
+//         cout << "R_imu: "<<R_imu<<std::endl;
     }
 
     // cout <<__FILE__ << ", " << __LINE__ <<" ,diagnose lio_state = " << std::setprecision(2) <<(state_inout - StatesGroup()).transpose() << endl;
